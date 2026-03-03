@@ -3,17 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Simple Block Blast</title>
+    <title>Neon Block Blast</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Turret+Road:wght@700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #1a1a1a;
-            --grid-bg: #2a2a2a;
-            --cell-empty: #333;
-            --text-color: #fff;
-            --accent: #ffcc00;
+            --bg-color: #0d0221;
+            --grid-bg: #261447;
+            --cell-empty-border: #392261;
+            --text-color: #f0f0f0;
+            --accent: #00f0ff; /* Neon Cyan */
+            --glow-color: rgba(0, 240, 255, 0.7);
+            --shadow-color: rgba(0, 240, 255, 0.3);
         }
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Turret Road', sans-serif;
             background-color: var(--bg-color);
             color: var(--text-color);
             margin: 0;
@@ -25,8 +30,17 @@
             overflow: hidden;
             touch-action: none; /* Prevent scrolling on mobile */
         }
-        h1 { margin: 10px 0; font-size: 24px; }
-        #score-board { margin-bottom: 20px; font-size: 20px; }
+        h1 { 
+            margin: 10px 0; 
+            font-size: 32px; 
+            text-shadow: 0 0 5px #fff, 0 0 10px #fff, 0 0 15px var(--accent), 0 0 20px var(--accent);
+            letter-spacing: 2px;
+        }
+        #score-board { 
+            margin-bottom: 20px; 
+            font-size: 20px; 
+            text-shadow: 0 0 5px var(--accent);
+        }
         
         #game-container {
             position: relative;
@@ -36,23 +50,28 @@
             display: grid;
             grid-template-columns: repeat(8, 40px);
             grid-template-rows: repeat(8, 40px);
-            gap: 4px;
-            background-color: var(--grid-bg);
-            padding: 4px;
+            gap: 2px;
+            background-color: var(--grid-bg); /* Fallback */
+            background-image: radial-gradient(circle, #1a0a35, var(--bg-color));
+            padding: 10px;
             border-radius: 8px;
             margin-bottom: 30px;
+            border: 2px solid var(--accent);
+            box-shadow: 0 0 15px var(--glow-color), inset 0 0 10px var(--shadow-color);
         }
 
         .cell {
             width: 40px;
             height: 40px;
-            background-color: var(--cell-empty);
+            background-color: transparent;
+            border: 1px solid var(--cell-empty-border);
             border-radius: 4px;
-            transition: background-color 0.2s;
+            transition: background-color 0.2s, box-shadow 0.2s;
         }
 
         .cell.filled {
-            box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
+            /* Box shadow is now set by JS for dynamic color */
+            border-color: transparent;
         }
         
         .cell.preview {
@@ -120,16 +139,30 @@
         #game-over-modal.active { display: flex; }
         button {
             padding: 12px 24px;
-            font-size: 18px;
+            font-size: 20px;
+            font-family: 'Turret Road', sans-serif;
             background: var(--accent);
-            border: none;
+            border: 1px solid var(--accent);
             border-radius: 25px;
             cursor: pointer;
             font-weight: bold;
             color: #000;
             margin-top: 20px;
+            text-shadow: none;
+            box-shadow: 0 0 10px var(--glow-color), 0 0 20px var(--glow-color);
+            transition: transform 0.2s, box-shadow 0.2s;
         }
-        button:hover { transform: scale(1.05); }
+        button:hover { 
+            transform: scale(1.05); 
+            box-shadow: 0 0 15px var(--glow-color), 0 0 30px var(--glow-color), 0 0 45px var(--accent);
+        }
+        
+        @keyframes flash {
+            50% { background-color: #fff; box-shadow: 0 0 20px #fff, 0 0 30px #fff; }
+        }
+        .cell.clearing {
+            animation: flash 0.4s ease-out;
+        }
 
         /* Mobile adjustments */
         @media (max-width: 400px) {
@@ -142,8 +175,7 @@
     </style>
 </head>
 <body>
-
-    <h1>Block Blast</h1>
+    <h1>BLOCK BLAST</h1>
     <div id="score-board">Score: <span id="score">0</span></div>
 
     <div id="game-container">
@@ -163,7 +195,7 @@
     <script>
         // Game Configuration
         const GRID_SIZE = 8;
-        const COLORS = ['#e74c3c', '#8e44ad', '#3498db', '#2ecc71', '#f1c40f', '#e67e22'];
+        const COLORS = ['#ff00ff', '#00ffff', '#00ff00', '#ffff00', '#ff5e00', '#ff0055']; // Neon Colors
         
         // Shape Definitions (matrices of 1s and 0s)
         const SHAPES = [
@@ -186,6 +218,9 @@
         let score = 0;
         let currentShapes = []; // The 3 shapes in dock
         
+        // Audio State
+        let audioCtx;
+
         // Drag State
         let isDragging = false;
         let dragShapeIndex = -1; // Index in currentShapes
@@ -200,6 +235,46 @@
         const modalEl = document.getElementById('game-over-modal');
         const finalScoreEl = document.getElementById('final-score');
 
+        // --- Audio ---
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+
+        function playSound(type, time = 0.1) {
+            if (!audioCtx) return;
+
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+            gainNode.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + 0.01);
+
+            if (type === 'place') {
+                oscillator.type = 'triangle';
+                oscillator.frequency.setValueAtTime(150, audioCtx.currentTime);
+            } else if (type === 'clear') {
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(440, audioCtx.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(880, audioCtx.currentTime + time);
+                time = 0.2;
+            } else if (type === 'gameOver') {
+                oscillator.type = 'sawtooth';
+                oscillator.frequency.setValueAtTime(200, audioCtx.currentTime);
+                oscillator.frequency.exponentialRampToValueAtTime(50, audioCtx.currentTime + 0.5);
+                time = 0.5;
+            }
+
+            oscillator.start(audioCtx.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + time);
+            oscillator.stop(audioCtx.currentTime + time);
+        }
+
+        // --- Game Logic ---
         function initGame() {
             grid = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(null));
             score = 0;
@@ -220,6 +295,7 @@
                     if(grid[r][c]) {
                         cell.classList.add('filled');
                         cell.style.backgroundColor = grid[r][c];
+                        cell.style.boxShadow = `0 0 7px ${grid[r][c]}, 0 0 12px ${grid[r][c]}`;
                     }
                     gridEl.appendChild(cell);
                 }
@@ -251,6 +327,7 @@
                         if(val) {
                             block.className = 'shape-block';
                             block.style.backgroundColor = color;
+                            block.style.boxShadow = `0 0 4px ${color}`;
                         }
                         shapeVis.appendChild(block);
                     });
@@ -270,6 +347,7 @@
         function startDrag(e, index) {
             if(currentShapes[index].used) return;
             e.preventDefault();
+            initAudio(); // Initialize audio on first user interaction
             
             isDragging = true;
             dragShapeIndex = index;
@@ -293,6 +371,7 @@
                     if(val) {
                         block.className = 'shape-block';
                         block.style.backgroundColor = dragColor;
+                        block.style.boxShadow = `0 0 8px ${dragColor}`;
                     }
                     proxyEl.appendChild(block);
                 });
@@ -319,6 +398,7 @@
             document.querySelectorAll('.cell.preview').forEach(el => {
                 el.classList.remove('preview');
                 el.style.backgroundColor = '';
+                el.style.boxShadow = '';
             });
 
             const {r, c} = getGridCoords(x, y);
@@ -333,6 +413,7 @@
                             if(cell) {
                                 cell.classList.add('preview');
                                 cell.style.backgroundColor = dragColor;
+                                cell.style.boxShadow = `0 0 8px ${dragColor}`;
                             }
                         }
                     }
@@ -412,6 +493,7 @@
             document.querySelectorAll('.cell.preview').forEach(el => {
                 el.classList.remove('preview');
                 el.style.backgroundColor = '';
+                el.style.boxShadow = '';
             });
         }
 
@@ -429,6 +511,7 @@
                 }
             }
             
+            playSound('place');
             updateScore(score + placedBlocks);
             renderGrid();
             checkLines();
@@ -459,16 +542,29 @@
             }
 
             if(rowsToClear.length > 0 || colsToClear.length > 0) {
+                playSound('clear');
+                linesCleared = rowsToClear.length + colsToClear.length;
+                
+                const cellsToFlash = new Set();
                 rowsToClear.forEach(r => {
-                    for(let c=0; c<GRID_SIZE; c++) grid[r][c] = null;
+                    for(let c=0; c<GRID_SIZE; c++) cellsToFlash.add(getCell(r,c));
                 });
                 colsToClear.forEach(c => {
-                    for(let r=0; r<GRID_SIZE; r++) grid[r][c] = null;
+                    for(let r=0; r<GRID_SIZE; r++) cellsToFlash.add(getCell(r,c));
                 });
-                
-                linesCleared = rowsToClear.length + colsToClear.length;
-                updateScore(score + (linesCleared * 10));
-                renderGrid();
+
+                cellsToFlash.forEach(cell => cell.classList.add('clearing'));
+
+                setTimeout(() => {
+                    rowsToClear.forEach(r => {
+                        for(let c=0; c<GRID_SIZE; c++) grid[r][c] = null;
+                    });
+                    colsToClear.forEach(c => {
+                        for(let r=0; r<GRID_SIZE; r++) grid[r][c] = null;
+                    });
+                    updateScore(score + (linesCleared * 10 * linesCleared)); // Bonus for multi-line clear
+                    renderGrid();
+                }, 400); // Corresponds to animation duration
             }
         }
 
@@ -491,6 +587,7 @@
             }
 
             if(!canMove) {
+                playSound('gameOver');
                 setTimeout(() => {
                     finalScoreEl.innerText = score;
                     modalEl.classList.add('active');
