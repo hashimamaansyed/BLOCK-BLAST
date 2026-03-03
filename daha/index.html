@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Simple Block Blast</title>
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --grid-bg: #2a2a2a;
+            --cell-empty: #333;
+            --text-color: #fff;
+            --accent: #ffcc00;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            touch-action: none; /* Prevent scrolling on mobile */
+        }
+        h1 { margin: 10px 0; font-size: 24px; }
+        #score-board { margin-bottom: 20px; font-size: 20px; }
+        
+        #game-container {
+            position: relative;
+        }
+
+        #grid {
+            display: grid;
+            grid-template-columns: repeat(8, 40px);
+            grid-template-rows: repeat(8, 40px);
+            gap: 4px;
+            background-color: var(--grid-bg);
+            padding: 4px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+
+        .cell {
+            width: 40px;
+            height: 40px;
+            background-color: var(--cell-empty);
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+
+        .cell.filled {
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
+        }
+        
+        .cell.preview {
+            opacity: 0.5;
+        }
+
+        #shapes-dock {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            height: 100px;
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .shape-container {
+            width: 80px;
+            height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: grab;
+        }
+        
+        .shape-container.used {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        /* The visual representation of a shape */
+        .shape {
+            display: grid;
+            gap: 2px;
+            pointer-events: none; /* Let clicks pass through to container */
+        }
+        
+        .shape-block {
+            width: 15px;
+            height: 15px;
+            border-radius: 2px;
+        }
+
+        /* Drag Proxy */
+        #drag-proxy {
+            position: fixed;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+            transform: translate(-50%, -50%); /* Center on cursor */
+            gap: 4px; /* Match grid gap */
+        }
+
+        /* Modal */
+        #game-over-modal {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.85);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            display: none;
+        }
+        #game-over-modal.active { display: flex; }
+        button {
+            padding: 12px 24px;
+            font-size: 18px;
+            background: var(--accent);
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-weight: bold;
+            color: #000;
+            margin-top: 20px;
+        }
+        button:hover { transform: scale(1.05); }
+
+        /* Mobile adjustments */
+        @media (max-width: 400px) {
+            #grid {
+                grid-template-columns: repeat(8, 11vw);
+                grid-template-rows: repeat(8, 11vw);
+            }
+            .cell { width: 11vw; height: 11vw; }
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Block Blast</h1>
+    <div id="score-board">Score: <span id="score">0</span></div>
+
+    <div id="game-container">
+        <div id="grid"></div>
+    </div>
+
+    <div id="shapes-dock"></div>
+
+    <div id="drag-proxy" class="shape"></div>
+
+    <div id="game-over-modal">
+        <h2>Game Over!</h2>
+        <p>Final Score: <span id="final-score">0</span></p>
+        <button onclick="restartGame()">Play Again</button>
+    </div>
+
+    <script>
+        // Game Configuration
+        const GRID_SIZE = 8;
+        const COLORS = ['#e74c3c', '#8e44ad', '#3498db', '#2ecc71', '#f1c40f', '#e67e22'];
+        
+        // Shape Definitions (matrices of 1s and 0s)
+        const SHAPES = [
+            [[1]], // Single
+            [[1,1]], // 2-Line H
+            [[1],[1]], // 2-Line V
+            [[1,1,1]], // 3-Line H
+            [[1],[1],[1]], // 3-Line V
+            [[1,1],[1,1]], // Square
+            [[1,1,1],[0,1,0]], // T-shape
+            [[1,0],[1,1]], // L-small
+            [[1,1,1],[1,0,0]], // L-big
+            [[1,1,1],[0,0,1]], // J-big
+            [[1,1,0],[0,1,1]], // Z
+            [[0,1,1],[1,1,0]]  // S
+        ];
+
+        // State
+        let grid = [];
+        let score = 0;
+        let currentShapes = []; // The 3 shapes in dock
+        
+        // Drag State
+        let isDragging = false;
+        let dragShapeIndex = -1; // Index in currentShapes
+        let dragShapeData = null; // The matrix
+        let dragColor = '';
+        
+        // DOM Elements
+        const gridEl = document.getElementById('grid');
+        const dockEl = document.getElementById('shapes-dock');
+        const proxyEl = document.getElementById('drag-proxy');
+        const scoreEl = document.getElementById('score');
+        const modalEl = document.getElementById('game-over-modal');
+        const finalScoreEl = document.getElementById('final-score');
+
+        function initGame() {
+            grid = Array(GRID_SIZE).fill().map(() => Array(GRID_SIZE).fill(null));
+            score = 0;
+            updateScore(0);
+            renderGrid();
+            spawnShapes();
+            modalEl.classList.remove('active');
+        }
+
+        function renderGrid() {
+            gridEl.innerHTML = '';
+            for(let r=0; r<GRID_SIZE; r++) {
+                for(let c=0; c<GRID_SIZE; c++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    cell.dataset.r = r;
+                    cell.dataset.c = c;
+                    if(grid[r][c]) {
+                        cell.classList.add('filled');
+                        cell.style.backgroundColor = grid[r][c];
+                    }
+                    gridEl.appendChild(cell);
+                }
+            }
+        }
+
+        function spawnShapes() {
+            currentShapes = [];
+            dockEl.innerHTML = '';
+            for(let i=0; i<3; i++) {
+                const shapeIdx = Math.floor(Math.random() * SHAPES.length);
+                const shapeMatrix = SHAPES[shapeIdx];
+                const color = COLORS[Math.floor(Math.random() * COLORS.length)];
+                
+                currentShapes.push({ matrix: shapeMatrix, color: color, used: false });
+                
+                const container = document.createElement('div');
+                container.className = 'shape-container';
+                container.dataset.index = i;
+                
+                // Render mini shape
+                const shapeVis = document.createElement('div');
+                shapeVis.className = 'shape';
+                shapeVis.style.gridTemplateColumns = `repeat(${shapeMatrix[0].length}, 15px)`;
+                
+                shapeMatrix.forEach(row => {
+                    row.forEach(val => {
+                        const block = document.createElement('div');
+                        if(val) {
+                            block.className = 'shape-block';
+                            block.style.backgroundColor = color;
+                        }
+                        shapeVis.appendChild(block);
+                    });
+                });
+                
+                container.appendChild(shapeVis);
+                
+                // Mouse/Touch Events for Dragging
+                container.addEventListener('mousedown', (e) => startDrag(e, i));
+                container.addEventListener('touchstart', (e) => startDrag(e, i), {passive: false});
+                
+                dockEl.appendChild(container);
+            }
+            checkGameOver();
+        }
+
+        function startDrag(e, index) {
+            if(currentShapes[index].used) return;
+            e.preventDefault();
+            
+            isDragging = true;
+            dragShapeIndex = index;
+            dragShapeData = currentShapes[index].matrix;
+            dragColor = currentShapes[index].color;
+            
+            // Get current cell size from the grid
+            const rect = gridEl.children[0].getBoundingClientRect();
+            const cellSize = rect.width;
+
+            // Setup Proxy
+            proxyEl.innerHTML = '';
+            proxyEl.style.display = 'grid';
+            proxyEl.style.gridTemplateColumns = `repeat(${dragShapeData[0].length}, ${cellSize}px)`;
+            
+            dragShapeData.forEach(row => {
+                row.forEach(val => {
+                    const block = document.createElement('div');
+                    block.style.width = cellSize + 'px';
+                    block.style.height = cellSize + 'px';
+                    if(val) {
+                        block.className = 'shape-block';
+                        block.style.backgroundColor = dragColor;
+                    }
+                    proxyEl.appendChild(block);
+                });
+            });
+
+            moveProxy(e);
+            
+            // Hide original temporarily
+            dockEl.children[index].style.opacity = '0';
+        }
+
+        function moveProxy(e) {
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            
+            proxyEl.style.left = clientX + 'px';
+            proxyEl.style.top = clientY + 'px';
+            
+            checkPreview(clientX, clientY);
+        }
+
+        function checkPreview(x, y) {
+            // Clear previous previews
+            document.querySelectorAll('.cell.preview').forEach(el => {
+                el.classList.remove('preview');
+                el.style.backgroundColor = '';
+            });
+
+            const {r, c} = getGridCoords(x, y);
+            if (r !== null && canPlace(dragShapeData, r, c)) {
+                // Draw preview
+                const rows = dragShapeData.length;
+                const cols = dragShapeData[0].length;
+                for(let i=0; i<rows; i++) {
+                    for(let j=0; j<cols; j++) {
+                        if(dragShapeData[i][j]) {
+                            const cell = getCell(r+i, c+j);
+                            if(cell) {
+                                cell.classList.add('preview');
+                                cell.style.backgroundColor = dragColor;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        function getGridCoords(x, y) {
+            const rect = gridEl.getBoundingClientRect();
+            const cellSize = rect.width / GRID_SIZE;
+            
+            // Center of shape is at x,y
+            const shapeWidth = dragShapeData[0].length * cellSize;
+            const shapeHeight = dragShapeData.length * cellSize;
+            
+            const startX = x - shapeWidth/2;
+            const startY = y - shapeHeight/2;
+            
+            const relativeX = startX - rect.left;
+            const relativeY = startY - rect.top;
+            
+            // Use Math.round to snap to nearest cell
+            const c = Math.round(relativeX / cellSize);
+            const r = Math.round(relativeY / cellSize);
+            
+            return {r, c};
+        }
+
+        function getCell(r, c) {
+            if(r<0 || r>=GRID_SIZE || c<0 || c>=GRID_SIZE) return null;
+            return gridEl.children[r*GRID_SIZE + c];
+        }
+
+        function canPlace(matrix, r, c) {
+            const rows = matrix.length;
+            const cols = matrix[0].length;
+            
+            for(let i=0; i<rows; i++) {
+                for(let j=0; j<cols; j++) {
+                    if(matrix[i][j]) {
+                        const targetR = r + i;
+                        const targetC = c + j;
+                        if(targetR < 0 || targetR >= GRID_SIZE || targetC < 0 || targetC >= GRID_SIZE) return false;
+                        if(grid[targetR][targetC] !== null) return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        function endDrag(e) {
+            if(!isDragging) return;
+            isDragging = false;
+            proxyEl.style.display = 'none';
+            
+            const clientX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX;
+            const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
+            
+            const {r, c} = getGridCoords(clientX, clientY);
+            
+            if(r !== null && canPlace(dragShapeData, r, c)) {
+                placeShape(dragShapeData, r, c, dragColor);
+                currentShapes[dragShapeIndex].used = true;
+                dockEl.children[dragShapeIndex].classList.add('used');
+                
+                if(currentShapes.every(s => s.used)) {
+                    setTimeout(spawnShapes, 500);
+                } else {
+                    checkGameOver();
+                }
+            } else {
+                // Return to dock
+                dockEl.children[dragShapeIndex].style.opacity = '1';
+            }
+            
+            // Clear previews
+            document.querySelectorAll('.cell.preview').forEach(el => {
+                el.classList.remove('preview');
+                el.style.backgroundColor = '';
+            });
+        }
+
+        function placeShape(matrix, r, c, color) {
+            const rows = matrix.length;
+            const cols = matrix[0].length;
+            let placedBlocks = 0;
+
+            for(let i=0; i<rows; i++) {
+                for(let j=0; j<cols; j++) {
+                    if(matrix[i][j]) {
+                        grid[r+i][c+j] = color;
+                        placedBlocks++;
+                    }
+                }
+            }
+            
+            updateScore(score + placedBlocks);
+            renderGrid();
+            checkLines();
+        }
+
+        function checkLines() {
+            let linesCleared = 0;
+            let rowsToClear = [];
+            let colsToClear = [];
+
+            // Check Rows
+            for(let r=0; r<GRID_SIZE; r++) {
+                if(grid[r].every(cell => cell !== null)) {
+                    rowsToClear.push(r);
+                }
+            }
+
+            // Check Cols
+            for(let c=0; c<GRID_SIZE; c++) {
+                let full = true;
+                for(let r=0; r<GRID_SIZE; r++) {
+                    if(grid[r][c] === null) {
+                        full = false;
+                        break;
+                    }
+                }
+                if(full) colsToClear.push(c);
+            }
+
+            if(rowsToClear.length > 0 || colsToClear.length > 0) {
+                rowsToClear.forEach(r => {
+                    for(let c=0; c<GRID_SIZE; c++) grid[r][c] = null;
+                });
+                colsToClear.forEach(c => {
+                    for(let r=0; r<GRID_SIZE; r++) grid[r][c] = null;
+                });
+                
+                linesCleared = rowsToClear.length + colsToClear.length;
+                updateScore(score + (linesCleared * 10));
+                renderGrid();
+            }
+        }
+
+        function checkGameOver() {
+            const unusedShapes = currentShapes.filter(s => !s.used);
+            if(unusedShapes.length === 0) return;
+
+            let canMove = false;
+            for(let s of unusedShapes) {
+                for(let r=0; r<GRID_SIZE; r++) {
+                    for(let c=0; c<GRID_SIZE; c++) {
+                        if(canPlace(s.matrix, r, c)) {
+                            canMove = true;
+                            break;
+                        }
+                    }
+                    if(canMove) break;
+                }
+                if(canMove) break;
+            }
+
+            if(!canMove) {
+                setTimeout(() => {
+                    finalScoreEl.innerText = score;
+                    modalEl.classList.add('active');
+                }, 500);
+            }
+        }
+
+        function updateScore(newScore) {
+            score = newScore;
+            scoreEl.innerText = score;
+        }
+
+        function restartGame() {
+            initGame();
+        }
+
+        // Global Event Listeners
+        window.addEventListener('mousemove', (e) => {
+            if(isDragging) moveProxy(e);
+        });
+        window.addEventListener('mouseup', (e) => {
+            if(isDragging) endDrag(e);
+        });
+        window.addEventListener('touchmove', (e) => {
+            if(isDragging) moveProxy(e);
+        }, {passive: false});
+        window.addEventListener('touchend', (e) => {
+            if(isDragging) endDrag(e);
+        });
+
+        // Start
+        initGame();
+
+    </script>
+</body>
+</html>
